@@ -5,7 +5,7 @@ opencv-python-headless==4.9.0.80
 numpy==1.26.4
 pandas==2.2.2
 plotly==5.22.0
-Pillow==10.3.0
+pillow==10.0.0
 
 # ANPR dependencies (CPU-only)
 easyocr==1.7.1
