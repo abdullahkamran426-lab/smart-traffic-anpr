@@ -1,0 +1,21 @@
+# Core dependencies for Streamlit Cloud
+streamlit==1.35.0
+ultralytics==8.2.0
+opencv-python-headless==4.9.0.80
+numpy<2.0.0
+pandas==2.2.2
+plotly==5.22.0
+Pillow==10.3.0
+
+# ANPR dependencies (CPU-only)
+easyocr==1.7.1
+torch==2.3.0+cpu
+torchvision==0.18.0+cpu
+
+# Utilities
+python-dotenv==1.0.1
+requests==2.31.0
+
+# Note: boxmot removed - using simpler tracking for cloud
+# Note: pytesseract removed - using EasyOCR only
+# Note: FastAPI/uvicorn removed - not needed for Streamlit Cloud
