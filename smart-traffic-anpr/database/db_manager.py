@@ -7,6 +7,7 @@ Thread-safe for concurrent Streamlit + pipeline access.
 import sqlite3
 import logging
 import threading
+import contextlib
 from datetime import datetime
 from pathlib import Path
 from config import DATABASE_PATH, DB_ENGINE, POSTGRES_URL
@@ -29,49 +30,76 @@ class DatabaseManager:
             conn.row_factory = sqlite3.Row
             return conn
         else:
-            import psycopg2
-            return psycopg2.connect(POSTGRES_URL)
+            try:
+                import psycopg2
+                return psycopg2.connect(POSTGRES_URL)
+            except ImportError:
+                logger.error("psycopg2 not installed. Please install psycopg2-binary for PostgreSQL support.")
+                raise
+
+    @contextlib.contextmanager
+    def _session(self):
+        """Context manager for database sessions. Handles transactions and closing."""
+        conn = self._get_connection()
+        try:
+            with conn:  # Transaction management
+                yield conn
+        finally:
+            conn.close()
 
     def _init_db(self):
-        """Create tables if they do not exist."""
+        """Create tables if they do not exist using schema.sql."""
+        schema_path = Path(__file__).parent / "schema.sql"
         with _lock:
-            with self._get_connection() as conn:
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS vehicle_log (
-                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                        vehicle_type    TEXT    NOT NULL,
-                        plate_number    TEXT,
-                        ocr_confidence  REAL,
-                        video_source    TEXT,
-                        timestamp       DATETIME DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
+            with self._session() as conn:
+                if schema_path.exists():
+                    logger.info(f"Initializing database with {schema_path}")
+                    with open(schema_path, 'r') as f:
+                        schema_sql = f.read()
+                        if DB_ENGINE == "sqlite":
+                            conn.executescript(schema_sql)
+                        else:
+                            # PostgreSQL / psycopg2
+                            with conn.cursor() as cur:
+                                cur.execute(schema_sql)
+                else:
+                    logger.warning("schema.sql not found, using fallback initialization")
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS vehicle_log (
+                            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                            vehicle_type    TEXT    NOT NULL,
+                            plate_number    TEXT,
+                            ocr_confidence  REAL,
+                            video_source    TEXT,
+                            timestamp       DATETIME DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
 
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS session_log (
-                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                        session_start   DATETIME,
-                        session_end     DATETIME,
-                        video_source    TEXT,
-                        total_vehicles  INTEGER DEFAULT 0,
-                        notes           TEXT
-                    )
-                """)
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS session_log (
+                            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                            session_start   DATETIME,
+                            session_end     DATETIME,
+                            video_source    TEXT,
+                            total_vehicles  INTEGER DEFAULT 0,
+                            notes           TEXT
+                        )
+                    """)
 
-                conn.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_timestamp
-                    ON vehicle_log(timestamp)
-                """)
+                    conn.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_timestamp
+                        ON vehicle_log(timestamp)
+                    """)
 
-                conn.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_vehicle_type
-                    ON vehicle_log(vehicle_type)
-                """)
+                    conn.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_vehicle_type
+                        ON vehicle_log(vehicle_type)
+                    """)
 
-                conn.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_plate
-                    ON vehicle_log(plate_number)
-                """)
+                    conn.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_plate
+                        ON vehicle_log(plate_number)
+                    """)
 
                 # Check if we need sample data (empty database)
                 cursor = conn.execute("SELECT COUNT(*) FROM vehicle_log")
@@ -104,7 +132,7 @@ class DatabaseManager:
         Returns the new row ID.
         """
         with _lock:
-            with self._get_connection() as conn:
+            with self._session() as conn:
                 cursor = conn.execute("""
                     INSERT INTO vehicle_log
                         (vehicle_type, plate_number, ocr_confidence, video_source, timestamp)
@@ -125,7 +153,7 @@ class DatabaseManager:
 
     def get_recent_logs(self, limit: int = 200) -> list[dict]:
         """Return the most recent N vehicle log records."""
-        with self._get_connection() as conn:
+        with self._session() as conn:
             rows = conn.execute("""
                 SELECT id, vehicle_type, plate_number, ocr_confidence,
                        video_source, timestamp
@@ -137,7 +165,7 @@ class DatabaseManager:
 
     def get_counts_by_class(self) -> dict:
         """Return total count per vehicle class."""
-        with self._get_connection() as conn:
+        with self._session() as conn:
             rows = conn.execute("""
                 SELECT vehicle_type, COUNT(*) as count
                 FROM vehicle_log
@@ -147,7 +175,7 @@ class DatabaseManager:
 
     def get_hourly_trend(self, hours: int = 24) -> list[dict]:
         """Return per-hour vehicle counts for the last N hours."""
-        with self._get_connection() as conn:
+        with self._session() as conn:
             rows = conn.execute("""
                 SELECT
                     strftime('%Y-%m-%d %H:00', timestamp) AS hour,
@@ -161,7 +189,7 @@ class DatabaseManager:
 
     def search_by_plate(self, query: str) -> list[dict]:
         """Search vehicle log by partial plate number."""
-        with self._get_connection() as conn:
+        with self._session() as conn:
             rows = conn.execute("""
                 SELECT * FROM vehicle_log
                 WHERE plate_number LIKE ?
@@ -172,7 +200,7 @@ class DatabaseManager:
 
     def get_summary_stats(self) -> dict:
         """Return overall statistics for dashboard summary cards."""
-        with self._get_connection() as conn:
+        with self._session() as conn:
             total = conn.execute(
                 "SELECT COUNT(*) FROM vehicle_log"
             ).fetchone()[0]
