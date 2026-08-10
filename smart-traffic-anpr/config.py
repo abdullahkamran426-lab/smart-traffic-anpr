@@ -4,6 +4,7 @@ Change values here to tune the pipeline without touching any other file.
 """
 
 import os
+import tempfile
 from pathlib import Path
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
@@ -13,7 +14,7 @@ DATA_DIR              = BASE_DIR / "data"
 OUTPUT_DIR            = BASE_DIR / "output"
 DATABASE_DIR          = BASE_DIR / "database"
 LOG_DIR               = BASE_DIR / "output" / "logs"
-TEMP_DIR              = Path("/tmp") if os.name != "nt" else (BASE_DIR / "temp")
+TEMP_DIR              = Path(tempfile.gettempdir())
 
 # Ensure directories exist
 for d in [MODEL_DIR, DATA_DIR, OUTPUT_DIR, DATABASE_DIR, LOG_DIR, TEMP_DIR]:

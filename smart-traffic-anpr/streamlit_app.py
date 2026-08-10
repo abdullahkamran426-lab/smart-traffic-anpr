@@ -14,6 +14,8 @@ import tempfile
 import logging
 import os
 import sys
+import shutil
+import atexit
 
 # Setup logging for cloud
 logging.basicConfig(
@@ -37,6 +39,25 @@ if 'results' not in st.session_state:
     st.session_state.results = None
 if 'uploaded_file_path' not in st.session_state:
     st.session_state.uploaded_file_path = None
+if 'error_message' not in st.session_state:
+    st.session_state.error_message = None
+if 'temp_files' not in st.session_state:
+    st.session_state.temp_files = []
+
+# ─── Cleanup Logic ────────────────────────────────────────────────────────────
+def cleanup_temp_files():
+    """Remove all temporary files tracked in session state."""
+    for fpath in st.session_state.get('temp_files', []):
+        if os.path.exists(fpath):
+            try:
+                if os.path.isdir(fpath):
+                    shutil.rmtree(fpath)
+                else:
+                    os.unlink(fpath)
+                logger.info(f"Cleaned up temp file: {fpath}")
+            except Exception as e:
+                logger.warning(f"Failed to cleanup {fpath}: {e}")
+    st.session_state.temp_files = []
 
 # ─── Cached Model Loading ─────────────────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
@@ -107,6 +128,10 @@ def process_video(video_path, progress_bar, status_text):
     anpr = load_anpr()
     db = get_database()
 
+    # Reset tracker state for new video
+    if tracker is not None:
+        tracker.reset()
+
     if detector is None:
         raise RuntimeError("Failed to load detection model")
 
@@ -134,7 +159,14 @@ def process_video(video_path, progress_bar, status_text):
     vehicle_data = []
 
     # Output video path
-    output_path = None
+    output_temp = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+    output_path = output_temp.name
+    output_temp.close()
+    st.session_state.temp_files.append(output_path)
+
+    # Define video writer
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (RESIZE_WIDTH, RESIZE_HEIGHT))
 
     status_text.text("Processing video... Please wait.")
 
@@ -166,6 +198,11 @@ def process_video(video_path, progress_bar, status_text):
 
             # Check line crossings
             events = line_det.update(tracked)
+
+            # Annotate frame
+            counts = line_det.get_counts()
+            annotated_frame = annotator.draw(frame, tracked, events, counts)
+            out.write(annotated_frame)
 
             # Process plates for crossing events
             for event in events:
@@ -227,6 +264,7 @@ def process_video(video_path, progress_bar, status_text):
 
     finally:
         cap.release()
+        out.release()
 
     counts = line_det.get_counts()
 
@@ -235,7 +273,8 @@ def process_video(video_path, progress_bar, status_text):
         "counts": counts,
         "plates": processed_plates,
         "vehicles": vehicle_data,
-        "duration": duration
+        "duration": duration,
+        "output_video": output_path
     }
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
@@ -300,11 +339,16 @@ if page == "📤 Upload & Process":
     )
 
     if uploaded_file is not None:
+        # If a new file is uploaded, cleanup old ones
+        if st.session_state.uploaded_file_path:
+            cleanup_temp_files()
+
         # Save uploaded file
         with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
             tmp_file.write(uploaded_file.read())
             tmp_path = tmp_file.name
             st.session_state.uploaded_file_path = tmp_path
+            st.session_state.temp_files.append(tmp_path)
 
         # Show video preview
         st.subheader("🎬 Video Preview")
@@ -338,20 +382,25 @@ if page == "📤 Upload & Process":
                 # Process the video
                 results = process_video(tmp_path, progress_bar, status_text)
                 st.session_state.results = results
+                st.session_state.error_message = None
 
                 progress_bar.empty()
                 status_text.success("✅ Processing complete!")
 
             except Exception as e:
                 progress_bar.empty()
-                status_text.error(f"❌ Error: {str(e)}")
+                st.session_state.error_message = f"❌ Error: {str(e)}"
                 logger.exception("Processing failed")
 
             finally:
                 st.session_state.processing = False
 
-            # Rerun to show results
+            # Rerun to show results or error
             st.rerun()
+
+        # Display persistent error message
+        if st.session_state.error_message:
+            st.error(st.session_state.error_message)
 
         # Display results
         if st.session_state.results:
@@ -359,6 +408,13 @@ if page == "📤 Upload & Process":
 
             st.markdown("---")
             st.subheader("📊 Processing Results")
+
+            # Show annotated video if available
+            if "output_video" in results and results["output_video"]:
+                st.subheader("📽️ Annotated Output")
+                # Streamlit video player sometimes struggles with raw mp4v,
+                # but we'll try it or suggest conversion
+                st.video(results["output_video"])
 
             # Metrics
             col1, col2, col3, col4 = st.columns(4)
@@ -390,11 +446,7 @@ if page == "📤 Upload & Process":
             else:
                 st.info("No license plates detected in this video.")
 
-            # Cleanup temp file
-            try:
-                os.unlink(tmp_path)
-            except:
-                pass
+            # Cleanup temp files is handled at the start of new upload or on demand
 
 # ─── Dashboard Page ───────────────────────────────────────────────────────────
 elif page == "📊 Dashboard":

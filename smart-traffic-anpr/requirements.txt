@@ -15,6 +15,7 @@ torchvision
 # Utilities
 python-dotenv==1.0.1
 requests==2.31.0
+psycopg2-binary==2.9.9
 
 # Note: boxmot removed - using simpler tracking for cloud
 # Note: pytesseract removed - using EasyOCR only
